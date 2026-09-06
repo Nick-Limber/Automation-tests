@@ -1,0 +1,125 @@
+---
+- hosts: control_plane
+  become: yes
+  tasks:
+    - name: Disable swap
+      command: swapoff -a
+      tags: swap
+
+    - name: Disable swap permanently
+      replace:
+        path: /etc/fstab
+        regexp: '^([^#].*?\sswap\s+sw\s+.*)$'
+        replace: '# \1'
+      tags: swap
+
+    - name: Load kernel modules
+      copy:
+        dest: /etc/modules-load.d/k8s.conf
+        content: |
+          overlay
+          br_netfilter
+
+    - name: Load kernel modules now
+      modprobe:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - overlay
+        - br_netfilter
+
+    - name: Kubernetes Networking
+      copy:
+        dest: /etc/sysctl.d/k8s.conf
+        content: |
+          net.bridge.bridge-nf-call-iptables = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.ipv4.ip_forward = 1
+
+    - name: Apply sysctl parameters without reboot
+      command: sysctl --system
+
+    - name: Create RKE2 config directory
+      file:
+        path: /etc/rancher/rke2
+        state: directory
+        0755: '0755'
+
+    - name: Configure RKE2 options
+      copy:
+        dest: /etc/rancher/rke2/config.yaml
+        content: |
+          write-kubeconfig-mode: "0644"
+          selinux: true
+
+    - name: Install RKE2
+      shell: curl -sfL https://get.rke2.io | sh -
+      args:
+        creates: /usr/local/bin/rke2
+
+    - name: Enable and start rke2-server service
+      systemd:
+        name: rke2-server
+        state: started
+        enabled: yes
+
+    - name: Wait for RKE2 kubeconfig to be generated
+      wait_for:
+        path: /etc/rancher/rke2/rke2.yaml
+        state: present
+        timeout: 120
+
+    - name: Create .kube directory for root user
+      file:
+        path: /root/.kube
+        state: directory
+        mode: '0755'
+
+    - name: Copy RKE2 kubeconfig to root's config location
+      copy:
+        src: /etc/rancher/rke2/rke2.yaml
+        dest: /root/.kube/config
+        remote_src: yes
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: Create a kubernetes admin group
+      group:
+        name: k8s-admins
+        state: present
+
+    - name: Create a non-root user
+      user:
+        name: "kubeadmin"
+        shell: /bin/bash
+        create_home: yes
+        groups: k8s-admins
+        append: yes
+        # Optional: Add an SSH public key so you can log in as this user
+        # ssh_key_bits: 2048
+        # ssh_key_file: .ssh/id_rsa
+
+    - name: Ensure RKE2 kubeconfig has restricted group permissions
+      file:
+        path: /etc/rancher/rke2/rke2.yaml
+        owner: root
+        group: k8s-admins
+        mode: '0640'
+
+    - name: Create .kube directory for the new user
+      file:
+        path: "/home/kubeadmin/.kube"
+        state: directory
+        owner: "kubeadmin"
+        group: "k8s-admins"
+        mode: '0755'
+
+    - name: Copy RKE2 config to the new user's home directory
+      copy:
+        src: /etc/rancher/rke2/rke2.yaml
+        dest: "/home/kubeadmin/.kube/config"
+        remote_src: yes
+        owner: "kubeadmin"
+        group: "k8s-admins"
+        mode: '0600'

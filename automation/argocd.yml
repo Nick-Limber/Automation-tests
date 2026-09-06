@@ -1,0 +1,56 @@
+---
+- hosts: rke2_control_plane
+  become: yes
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  tasks:
+    - name: Create argocd namespace
+      kubernetes.core.k8s:
+        name: argocd
+        api_version: v1
+        kind: Namespace
+        state: present
+
+    - name: Deploy official ArgoCD manifests
+      kubernetes.core.k8s:
+        state: present
+        src: https://raw.githubusercontent.com/argoproj/argo-cd/v2.11.1/manifests/install.yaml
+        namespace: argocd
+
+    - name: Wait for ArgoCD API server deployment to be ready
+      kubernetes.core.k8s_info:
+        kind: Deployment
+        namespace: argocd
+        name: argocd-server
+      register: argocd_server
+      until: argocd_server.resources | length > 0 and (argocd_server.resources[0].status.readyReplicas | default(0)) == 1
+      retries: 30
+      delay: 10
+
+    - name: Fetch initial ArgoCD admin password secret
+      kubernetes.core.k8s_info:
+        kind: Secret
+        namespace: argocd
+        name: argocd-initial-admin-secret
+      register: argocd_secret
+
+    - name: Display ArgoCD login credentials
+      ansible.builtin.debug:
+        msg: "ArgoCD initial admin password: {{ argocd_secret.resources[0].data.password | b64decode }}"
+
+    - name: Register GitHub repository with ArgoCD
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: my-github-repo-secret
+            namespace: argocd
+            labels:
+              argocd.argoproj.io/secret-type: repository
+          type: Opaque
+          stringData:
+            url: https://github.com/your-org/your-repo.git
+            username: "{{ lookup('env', 'GITHUB_USER') }}"
+            password: "{{ lookup('env', 'GITHUB_PAT') }}"

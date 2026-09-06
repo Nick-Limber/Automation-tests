@@ -1,0 +1,39 @@
+------
+- hosts: rke2_workers
+  become: yes
+  tasks:
+    - name: Ensure firewalld allows RKE2 agent ports if active
+      ansible.builtin.firewalld:
+        port: "{{ item }}"
+        permanent: yes
+        state: enabled
+        immediate: yes
+      loop:
+        - 9345/tcp
+        - 10250/tcp
+      ignore_errors: yes
+
+    - name: Create RKE2 config directory
+      ansible.builtin.file:
+        path: /etc/rancher/rke2
+        state: directory
+        mode: '0755'
+
+    - name: Configure RKE2 worker node config.yaml
+      ansible.builtin.copy:
+        dest: /etc/rancher/rke2/config.yaml
+        content: |
+          server: https://<CONTROL_PLANE_IP>:9345
+          token: "<RKE2_CLUSTER_TOKEN>"
+
+    - name: Install RKE2 agent service using official installation script
+      ansible.builtin.shell: |
+        curl -sfL https://get.rke2.io | INSTALL_RKE2_TYPE="agent" sh -
+      args:
+        creates: /usr/local/bin/rke2
+
+    - name: Enable and start rke2-agent service
+      ansible.builtin.systemd:
+        name: rke2-agent
+        state: starte
+        enabled: yes

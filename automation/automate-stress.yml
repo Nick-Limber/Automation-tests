@@ -1,0 +1,89 @@
+---
+- name: Advanced Core and Frequency Stress Test Setup with Full Cleanup
+  hosts: localhost
+  connection: local
+  become: true
+
+  vars:
+    python_script_path: ""
+    stress_cpus: "0,1"
+    system_cpus: "2,3"
+    max_freq: "3000MHz"
+
+    stress_test_env:
+      duration: "60s"
+      cpu_max_load: "75"
+      num_cpus: "2"
+      memrate_bytes: "1G"
+      memrate_flush: "on"
+      cpu_method: "all"
+
+  tasks:
+    - name: Stress test setup and cleanup
+      block:
+
+        - name: Get current running kernel version
+          ansible.builtin.command: uname -r
+          register: kernel_version
+          changed_when: false
+
+        - name: Install required packages
+          ansible.builtin.apt:
+            name: 
+              - linux-tools-common
+              - "linux-tools-{{ kernel_version.stdout }}"
+              - numactl
+            state: present
+          register: tools_installed
+
+        - name: Set maximum frequency
+          ansible.builtin.shell: |
+            cpupower frequency-set -g performance
+            cpupower frequency-set -u {{ max_freq }}
+          register: freq_result
+
+        - name: Disable c-states
+          ansible.builtin.shell: |
+            cpupower idle-set -D 0
+
+        - name: Run stress test
+          ansible.builtin.command:
+            cmd: "numactl --interleave=all taskset -c {{ stress_cpus }} python3 {{ python_script_path }}"
+          environment: "{{ stress_test_env }}"
+          register: test_output
+
+        - name: Display stress test results
+          ansible.builtin.debug:
+            var: test_output.stdout_lines
+ 
+        - name: Append hostname to csv
+          ansible.builtin.replace:
+            path: "../{{inventory_hostname}}.csv"
+            regexp: '^(.*)$'
+            replace: "{{ inventory_hostname }},\\1"
+
+        - name: Send file to analysis server
+          ansible.builtin.shell: |
+            scp "../{{inventory_hostname}}.csv" hostname@ip:/var/spool/
+
+      always:
+        - name: Cleanup - governor back to default
+          ansible.builtin.shell: |
+            cpupower frequency-set -g ondemand
+          ignore_errors: true
+
+        - name: Cleanup - Re-enable CPU idle C-states
+          ansible.builtin.shell: |
+            cpupower idle-set -e all
+          ignore_errors: true
+
+        - name: Cleanup - Uninstall packages
+          ansible.builtin.apt:
+            name: 
+              - linux-tools-common
+              - "linux-tools-{{ kernel_version.stdout }}"
+              - numactl
+            state: absent
+            purge: true
+          when: tools_installed.changed
+          ignore_errors: true

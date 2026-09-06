@@ -21,7 +21,7 @@ def stress_cpu():
         "-t", (duration)
     ]
 
-    cmd = ["perf", "stat", "-x,"] + stress_args
+    cmd = ["perf", "stat", "-x,", "-o ../output.csv"] + stress_args
 
     res = subprocess.run(cmd, check=True)
     print(res.returncode)
